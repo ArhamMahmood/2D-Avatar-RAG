@@ -1,0 +1,27 @@
+# Virtual Environments
+venv/
+env/
+ENV/
+
+# Secrets & Environment Files
+**/.env
+.env
+
+# Personal PDF Data
+RAG_brain/my_cv.pdf
+
+# Node & Frontend Caches
+node_modules/
+frontend/node_modules/
+frontend/.next/
+.next/
+
+# Python Caches & Compiled Files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# OS Specific Files
+.DS_Store
+Thumbs.db
