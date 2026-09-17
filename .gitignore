@@ -24,4 +24,6 @@ __pycache__/
 
 # OS Specific Files
 .DS_Store
-Thumbs.db
+Thumbs.db.env
+
+.gitignore

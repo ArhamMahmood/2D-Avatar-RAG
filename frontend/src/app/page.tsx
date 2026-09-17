@@ -1,427 +1,113 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
-import ReactMarkdown from 'react-markdown';
+import React from 'react';
+import Link from 'next/link';
+import InteractiveBackground from '@/components/InteractiveBackground';
 
-// Anti-Garbage-Collection hack for Chrome TTS bug
-let globalUtterance: SpeechSynthesisUtterance | null = null;
-
-export default function Home() {
-  const [messages, setMessages] = useState<{ sender: string; text: string }[]>([
-    { sender: 'Avatar', text: 'Hello! I am your AI assistant from Sham Marianas. How can I help you today?' }
-  ]);
-  const [inputMessage, setInputMessage] = useState('');
-  const [isListening, setIsListening] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  
-  // Split loading states for better UX
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const [loading, setLoading] = useState(false);
-  
-  // Audio & Video references
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [cameraActive, setCameraActive] = useState(false);
-
-  // Auto-scroll reference for chat box
-  const chatEndRef = useRef<HTMLDivElement | null>(null);
-
-  // 1. Force load voices immediately on mount
-  useEffect(() => {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.getVoices();
-      window.speechSynthesis.onvoiceschanged = () => {
-        window.speechSynthesis.getVoices();
-      };
-    }
-  }, []);
-
-  // Auto-scroll to bottom whenever messages or loading state changes
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, loading, isTranscribing]);
-
-  // Clean up hardware resources when component unmounts
-  useEffect(() => {
-    return () => {
-      stopCamera();
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stop();
-      }
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
-    };
-  }, []);
-
-  // Clear chat history
-  const clearChat = () => {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
-    setMessages([
-      { sender: 'Avatar', text: 'Hello! I am your AI assistant from Sham Marianas. How can I help you today?' }
-    ]);
-  };
-
-  // ==========================================
-  // CAMERA CONTROLS
-  // ==========================================
-  const toggleCamera = async () => {
-    if (cameraActive) {
-      stopCamera();
-    } else {
-      await startCamera();
-    }
-  };
-
-  const startCamera = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        setCameraActive(true);
-      }
-    } catch (err) {
-      console.error("Webcam access error:", err);
-      setCameraActive(false);
-    }
-  };
-
-  const stopCamera = () => {
-    if (videoRef.current && videoRef.current.srcObject) {
-      const stream = videoRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach(track => track.stop());
-      videoRef.current.srcObject = null;
-    }
-    setCameraActive(false);
-  };
-
-  // ==========================================
-  // CHAT & VOICE ENGINE (FIXED)
-  // ==========================================
-  const speakText = (text: string) => {
-    if (isMuted || !('speechSynthesis' in window)) return;
-    
-    // Stop any current speech
-    window.speechSynthesis.cancel();
-
-    if (!text) return;
-
-    // Clean up markdown characters for natural speech
-    const cleanTextForSpeech = text
-      .replace(/\*/g, '')
-      .replace(/#/g, '')
-      .replace(/https?:\/\/\S+/g, 'a link provided in the chat')
-      .trim();
-
-    // Attach to global variable to prevent Chrome from deleting it mid-speech
-    globalUtterance = new SpeechSynthesisUtterance(cleanTextForSpeech);
-    
-    const voices = window.speechSynthesis.getVoices();
-    const englishVoice = voices.find(v => v.lang.startsWith('en') && v.name.includes('Google')) 
-                      || voices.find(v => v.lang.startsWith('en')) 
-                      || voices[0];
-    
-    if (englishVoice) {
-      globalUtterance.voice = englishVoice;
-    }
-    globalUtterance.rate = 1.0;
-    globalUtterance.volume = 1.0;
-    globalUtterance.onerror = (e) => console.error('Speech synthesis error/blocked:', e);
-    
-    // Speak and immediately resume to bypass browser pause bugs
-    window.speechSynthesis.speak(globalUtterance);
-    window.speechSynthesis.resume();
-  };
-
-  const sendMessageToBackend = async (textToSend: string, isVoiceInput: boolean = false) => {
-    if (!textToSend.trim()) return;
-
-    // UNLOCK THE SPEECH ENGINE IMMEDIATELY on user interaction
-    if ('speechSynthesis' in window && !isMuted) {
-      window.speechSynthesis.resume();
-    }
-
-    const userMsg = { sender: 'You', text: textToSend };
-    setMessages((prev) => [...prev, userMsg]);
-    setInputMessage('');
-    setLoading(true);
-
-    try {
-      const response = await fetch('http://127.0.0.1:8000/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: textToSend }),
-      });
-
-      const data = await response.json();
-      const avatarReply = data.reply || "I couldn't process that.";
-
-      setMessages((prev) => [...prev, { sender: 'Avatar', text: avatarReply }]);
-
-      // NOW SPEAK THE ACTUAL REPLY
-      speakText(avatarReply);
-
-    } catch (error) {
-      console.error('API Error:', error);
-      setMessages((prev) => [...prev, { sender: 'Avatar', text: 'Error connecting to Python backend.' }]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // ==========================================
-  // AUDIO RECORDING & TRANSCRIPTION
-  // ==========================================
-  const toggleListening = async () => {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      
-      if (!isListening) {
-        const unlock = new SpeechSynthesisUtterance('');
-        unlock.volume = 0;
-        window.speechSynthesis.speak(unlock);
-      }
-    }
-
-    if (isListening) {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stop();
-      }
-      setIsListening(false);
-    } else {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        
-        let mimeType = 'audio/webm';
-        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-          mimeType = 'audio/webm;codecs=opus';
-        } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
-          mimeType = 'audio/mp4';
-        }
-
-        const mediaRecorder = new MediaRecorder(stream, { mimeType });
-        mediaRecorderRef.current = mediaRecorder;
-        audioChunksRef.current = [];
-
-        mediaRecorder.ondataavailable = (event) => {
-          if (event.data && event.data.size > 0) {
-            audioChunksRef.current.push(event.data);
-          }
-        };
-
-        mediaRecorder.onstop = async () => {
-          const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
-          stream.getTracks().forEach(track => track.stop());
-          await sendAudioToBackend(audioBlob);
-        };
-
-        mediaRecorder.start(250);
-        setIsListening(true);
-      } catch (err) {
-        console.error("Microphone permission error:", err);
-        alert("Microphone access is required to use voice input.");
-      }
-    }
-  };
-
-  const sendAudioToBackend = async (audioBlob: Blob) => {
-    if (audioBlob.size === 0) {
-      alert("No speech detected. Please speak louder or verify microphone settings.");
-      return;
-    }
-
-    setIsTranscribing(true);
-    const formData = new FormData();
-    formData.append('file', audioBlob, 'speech.webm');
-
-    try {
-      const response = await fetch('http://127.0.0.1:8000/transcribe', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error("Transcription server error");
-      }
-
-      const data = await response.json();
-      const transcribedText = data.text ? data.text.trim() : '';
-
-      if (transcribedText) {
-        await sendMessageToBackend(transcribedText, true);
-      } else {
-        alert("Could not transcribe audio. Please try speaking again.");
-      }
-    } catch (error) {
-      console.error('Audio Transcription Connection Error:', error);
-      alert('Failed to connect to Python backend at http://127.0.0.1:8000/transcribe.');
-    } finally {
-      setIsTranscribing(false);
-    }
-  };
-
+export default function LandingPage() {
   return (
-    <main className="flex h-screen w-screen bg-gray-950 text-white overflow-hidden p-6 gap-6">
+    <div className="min-h-screen text-slate-200 flex flex-col justify-between selection:bg-teal-500/30 selection:text-teal-200 relative overflow-hidden font-sans">
       
-      {/* LEFT COLUMN: Controls, Vision, & 3D Avatar Box */}
-      <div className="w-1/3 flex flex-col gap-4">
-        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-4 flex flex-col h-full gap-4 shadow-xl overflow-y-auto">
-          <div>
-            <h1 className="text-xl font-bold text-cyan-400">Sham Marianas AI</h1>
-            <p className="text-xs text-gray-400 mb-2">RAG Powered Assistant</p>
+      {/* Interactive Dust & Watermark Canvas */}
+      <InteractiveBackground />
+
+      {/* Ambient Soft Glow Gradient */}
+      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[1000px] h-[500px] bg-[radial-gradient(ellipse_at_top,rgba(20,184,166,0.12),transparent_70%)] pointer-events-none z-0" />
+
+      {/* Header */}
+      <header className="border-b border-white/[0.08] bg-[#0A0F0D]/70 backdrop-blur-xl sticky top-0 z-50">
+        <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="font-semibold text-sm tracking-tight text-white/90">Sham Marianas</span>
+            <span className="text-[13px] font-mono font-medium px-2 py-0.5 rounded-full bg-white/[0.06] text-teal-300 border border-teal-500/20">
+              DEMO
+            </span>
           </div>
 
-          {/* Vision Feed Container */}
-          <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden border border-gray-700 flex items-center justify-center">
-            <video 
-              ref={videoRef} 
-              autoPlay 
-              playsInline 
-              muted 
-              className={`w-full h-full object-cover transform -scale-x-100 ${!cameraActive && 'hidden'}`} 
-            />
-            {!cameraActive && (
-              <span className="text-xs text-gray-500">Live Vision Disabled</span>
-            )}
-            
-            <button
-              onClick={toggleCamera}
-              className={`absolute top-2 right-2 text-xs px-2.5 py-1 rounded-md font-semibold transition border ${
-                cameraActive 
-                  ? 'bg-red-600/80 border-red-500 text-white hover:bg-red-600' 
-                  : 'bg-cyan-600/80 border-cyan-500 text-white hover:bg-cyan-600'
-              }`}
+          <nav className="flex items-center gap-4">
+            <Link 
+              href="/assistant" 
+              className="text-xs font-medium bg-teal-500 hover:bg-teal-400 text-slate-950 px-4 py-2 rounded-lg transition-all duration-200 shadow-md shadow-teal-500/20 font-sans"
             >
-              {cameraActive ? '🔴 Close WebCam' : '📷 Open WebCam'}
-            </button>
-          </div>
-
-          {/* 3D Avatar Viewport Container Placeholder */}
-          <div className="flex-1 bg-gray-950/80 border border-cyan-500/20 rounded-xl p-4 flex flex-col items-center justify-center text-center relative overflow-hidden group">
-            <div className="absolute inset-0 bg-cyan-500/5 blur-xl group-hover:bg-cyan-500/10 transition"></div>
-            <div className="w-16 h-16 rounded-full border-2 border-dashed border-cyan-400/50 flex items-center justify-center mb-2 animate-spin-slow">
-              <span className="text-2xl">🤖</span>
-            </div>
-            <p className="text-xs font-semibold text-cyan-400 z-10">3D Avatar Viewport</p>
-            <p className="text-[10px] text-gray-500 z-10">Future Three.js / Canvas Integration Box</p>
-          </div>
+              Launch
+            </Link>
+          </nav>
         </div>
-      </div>
+      </header>
 
-      {/* RIGHT COLUMN: Chat Interface */}
-      <div className="w-2/3 flex flex-col bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-xl justify-between">
-        
-        {/* Chat Header Actions */}
-        <div className="flex justify-between items-center pb-4 mb-4 border-b border-gray-800">
-          <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Conversation Stream</span>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => {
-                setIsMuted(!isMuted);
-                if (!isMuted && 'speechSynthesis' in window) window.speechSynthesis.cancel();
-              }}
-              title={isMuted ? "Unmute Voice Output" : "Mute Voice Output"}
-              className="text-xs px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 transition flex items-center gap-1.5"
-            >
-              {isMuted ? '🔇 Voice Muted' : '🔊 Voice Active'}
-            </button>
-            <button
-              onClick={clearChat}
-              title="Clear Chat History"
-              className="text-xs px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-red-950/50 hover:border-red-800 border border-gray-700 text-gray-300 hover:text-red-400 transition"
-            >
-              Clear Chat
-            </button>
-          </div>
-        </div>
-
-        {/* Chat History Box */}
-        <div className="flex-1 overflow-y-auto space-y-4 pr-2 mb-4">
-          {messages.map((msg, index) => (
-            <div
-              key={index}
-              className={`p-4 rounded-2xl max-w-[80%] text-sm ${
-                msg.sender === 'You'
-                  ? 'bg-cyan-600 ml-auto text-white'
-                  : 'bg-gray-800 text-gray-200 border border-gray-700'
-              }`}
-            >
-              <p className="text-[10px] font-semibold opacity-60 mb-1 tracking-wider uppercase">{msg.sender}</p>
-              
-              <div className="leading-relaxed prose prose-invert max-w-none text-sm">
-                <ReactMarkdown
-                  components={{
-                    a: ({ node, ...props }) => (
-                      <a
-                        {...props}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-cyan-400 underline hover:text-cyan-300 font-medium"
-                      />
-                    ),
-                    ul: ({ node, ...props }) => <ul {...props} className="list-disc pl-4 space-y-1 my-1" />,
-                    li: ({ node, ...props }) => <li {...props} className="text-sm" />
-                  }}
-                >
-                  {msg.text}
-                </ReactMarkdown>
-              </div>
-            </div>
-          ))}
-
-          {/* Centered Compact Dynamic Status Pill */}
-          {(isTranscribing || (loading && !isTranscribing)) && (
-            <div className="flex justify-center my-2">
-              <div className="inline-flex items-center gap-2 bg-gray-800/90 text-cyan-400 px-4 py-1.5 rounded-full text-xs animate-pulse border border-cyan-500/30 w-fit shadow-lg">
-                {isTranscribing ? '🎙️ Transcribing audio...' : '🤖 Assistant is thinking...'}
-              </div>
-            </div>
-          )}
+      {/* Hero Content */}
+      <main className="max-w-6xl mx-auto px-6 py-24 flex-1 flex flex-col justify-center relative z-10">
+        <div className="max-w-3xl space-y-6">
           
-          <div ref={chatEndRef} />
+          {/* Status Badge */}
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-teal-500/10 border border-teal-500/20 text-teal-300 text-xs font-medium">
+            <span className="w-1.5 h-1.5 rounded-full bg-teal-400 animate-pulse" />
+            <span>Project by Arham Mahmood</span>
+          </div>
+          
+          {/* Headline */}
+          <h1 className="text-4xl sm:text-6xl font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-b from-white via-slate-200 to-slate-400 leading-[1.1]">
+            Real-Time AI Avatar & Context Engine
+          </h1>
+          
+          <p className="text-slate-400 text-base sm:text-lg leading-relaxed max-w-2xl font-normal">
+            Low-latency conversational platform integrating Live2D lip-sync animation, real-time voice synthesis, and document-grounded context retrieval.
+          </p>
+
+          {/* CTA */}
+          <div className="pt-4 flex items-center gap-4">
+            <Link 
+              href="/assistant" 
+              className="bg-teal-600 hover:bg-teal-500 text-white font-medium px-6 py-3 rounded-xl transition-all duration-200 shadow-lg shadow-teal-900/30 hover:shadow-teal-600/30 flex items-center gap-2 text-sm border border-teal-400/30"
+            >
+              Open Chat
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+              </svg>
+            </Link>
+          </div>
         </div>
 
-        {/* Input Form & Audio Recorder Microphone Button */}
-        <div className="flex gap-2 items-center bg-gray-950 border border-gray-800 rounded-xl p-2 focus-within:border-cyan-500 transition">
-          <input
-            type="text"
-            value={inputMessage}
-            onChange={(e) => setInputMessage(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                sendMessageToBackend(inputMessage, false);
-              }
-            }}
-            placeholder={isListening ? "Recording... Click microphone button to stop and send" : "Ask a question or type something..."}
-            className="flex-1 bg-transparent px-3 py-1 text-sm focus:outline-none text-white"
-            disabled={isListening || isTranscribing}
-          />
+        {/* Feature Cards Grid */}
+        <div className="grid md:grid-cols-3 gap-5 mt-20">
+          
+          <div className="bg-slate-900/40 border border-white/[0.08] p-6 rounded-2xl backdrop-blur-xl hover:border-teal-500/30 transition-all duration-300 group">
+            <div className="w-8 h-8 rounded-lg bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400 mb-4 font-mono text-xs group-hover:scale-105 transition-transform">
+              1
+            </div>
+            <h3 className="font-semibold text-white text-sm mb-1.5">Context Grounding</h3>
+            <p className="text-slate-400 text-xs leading-relaxed">
+              Retrieval-Augmented Generation pipeline enforcing zero-hallucination document-backed responses.
+            </p>
+          </div>
 
-          <button
-            onClick={toggleListening}
-            title={isListening ? "Stop & Send Audio" : "Record Voice Input"}
-            className={`p-2.5 rounded-lg transition text-base flex items-center justify-center ${
-              isListening
-                ? 'bg-red-600 text-white animate-pulse border border-red-400'
-                : 'bg-gray-800 hover:bg-gray-700 text-cyan-400 border border-gray-700'
-            }`}
-          >
-            {isListening ? '🛑' : '🎤'}
-          </button>
+          <div className="bg-slate-900/40 border border-white/[0.08] p-6 rounded-2xl backdrop-blur-xl hover:border-teal-500/30 transition-all duration-300 group">
+            <div className="w-8 h-8 rounded-lg bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400 mb-4 font-mono text-xs group-hover:scale-105 transition-transform">
+              2
+            </div>
+            <h3 className="font-semibold text-white text-sm mb-1.5">2D Avatar</h3>
+            <p className="text-slate-400 text-xs leading-relaxed">
+              Web Audio & SpeechSynthesis synchronization driving real-time parameter animation loops.
+            </p>
+          </div>
 
-          <button
-            onClick={() => sendMessageToBackend(inputMessage, false)}
-            disabled={isListening || isTranscribing}
-            className="bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 px-5 py-2.5 rounded-lg text-sm font-semibold transition shadow-lg shadow-cyan-900/20 text-white"
-          >
-            Send
-          </button>
+          <div className="bg-slate-900/40 border border-white/[0.08] p-6 rounded-2xl backdrop-blur-xl hover:border-teal-500/30 transition-all duration-300 group">
+            <div className="w-8 h-8 rounded-lg bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400 mb-4 font-mono text-xs group-hover:scale-105 transition-transform">
+              3
+            </div>
+            <h3 className="font-semibold text-white text-sm mb-1.5">Voice & Vision Stream</h3>
+            <p className="text-slate-400 text-xs leading-relaxed">
+              Instant backend Whisper transcription paired with live browser media-stream viewport monitoring.
+            </p>
+          </div>
+
         </div>
+      </main>
 
-      </div>
-    </main>
+      {/* Footer */}
+      <footer className="border-t border-white/[0.08] py-6 text-center text-[11px] text-slate-500 font-mono relative z-10">
+        <span>© 2026 RAG Project. ARHAM MAHMOOD</span>
+      </footer>
+    </div>
   );
 }
