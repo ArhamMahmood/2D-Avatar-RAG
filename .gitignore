@@ -25,5 +25,3 @@ __pycache__/
 # OS Specific Files
 .DS_Store
 Thumbs.db.env
-
-.gitignore
