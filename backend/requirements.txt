@@ -1,0 +1,10 @@
+python-dotenv
+fastapi
+pydantic
+uvicorn
+openai
+ollama
+pinecone
+google-genai
+python-multipart
+openai-whisper

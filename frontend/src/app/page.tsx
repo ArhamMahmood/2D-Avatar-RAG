@@ -18,7 +18,7 @@ export default function LandingPage() {
       <header className="border-b border-white/[0.08] bg-[#0A0F0D]/70 backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <span className="font-semibold text-sm tracking-tight text-white/90">Sham Marianas</span>
+            <span className="font-semibold text-sm tracking-tight text-white/90">Project</span>
             <span className="text-[13px] font-mono font-medium px-2 py-0.5 rounded-full bg-white/[0.06] text-teal-300 border border-teal-500/20">
               DEMO
             </span>
