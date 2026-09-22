@@ -64,6 +64,7 @@ def _parse_models(plural_key: str, singular_key: str, default_val: str) -> List[
 GROQ_API_KEY   = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_MODELS     = _parse_models("GROQ_MODELS", "GROQ_MODEL", "openai/gpt-oss-20b,groq/compound-mini,qwen/qwen3.8-27b")
 GROQ_BASE_URL  = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").strip()
+GROQ_WHISPER_MODEL = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo").strip()
 
 # 4. OpenRouter — OpenAI-compatible
 OPENROUTER_API_KEY  = os.getenv("OPENROUTER_API_KEY", "").strip()
@@ -78,8 +79,6 @@ OLLAMA_CHAT_MODELS = _parse_models("OLLAMA_CHAT_MODELS", "OLLAMA_CHAT_MODEL", "q
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "").strip()
 PINECONE_INDEX   = os.getenv("PINECONE_INDEX", "avatar-brain").strip()
 EMBED_MODEL      = os.getenv("EMBED_MODEL", "nomic-embed-text").strip()
-
-WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL", "base.en").strip()
 
 MAX_OUTPUT_TOKENS  = _env_int("MAX_OUTPUT_TOKENS", 2048)
 TEMPERATURE        = _env_float("TEMPERATURE", 0.1)
@@ -229,10 +228,6 @@ _sambanova_client: Optional[Any]  = None
 _openrouter_client: Optional[Any] = None
 _ollama_oai_client: Optional[Any] = None
 
-_whisper_model = None
-_whisper_lock  = threading.Lock()
-_whisper_state = "not_loaded"
-
 app = FastAPI(
     title="Avatar RAG — Arham Mahmood",
     version="2.3.0",
@@ -284,8 +279,6 @@ def _startup() -> None:
             log.info("Ollama OpenAI-compat ready — configured models: %s @ %s", OLLAMA_CHAT_MODELS, OLLAMA_BASE_URL)
         except Exception:
             log.error("Ollama OpenAI-compat init failed:\n%s", traceback.format_exc())
-
-    threading.Thread(target=_load_whisper, daemon=True).start()
 
 
 # --------------------------------------------------------------------------
@@ -820,36 +813,16 @@ def chat_with_avatar(request: ChatRequest, http_request: Request) -> ChatRespons
 
 
 # --------------------------------------------------------------------------
-# Whisper STT Load & Transcribe
+# Groq Whisper API STT Transcribe Endpoint
 # --------------------------------------------------------------------------
-
-def _load_whisper() -> None:
-    global _whisper_model, _whisper_state
-    with _whisper_lock:
-        if _whisper_model is not None:
-            return
-        try:
-            import whisper
-            _whisper_state = "loading"
-            _whisper_model = whisper.load_model(WHISPER_MODEL_NAME)
-            _whisper_state = f"ok: {WHISPER_MODEL_NAME}"
-        except Exception as exc:
-            _whisper_state = f"unavailable: {exc}"
-
-
-def _transcribe_sync(path: str) -> str:
-    result = _whisper_model.transcribe(
-        path, language="en", fp16=False, temperature=0.0,
-    )
-    return str(result.get("text", "")).strip()
-
 
 @app.post("/transcribe")
 async def transcribe_audio(file: UploadFile = File(...)) -> Dict[str, str]:
-    if _whisper_model is None:
-        _load_whisper()
-    if _whisper_model is None:
-        raise HTTPException(status_code=503, detail="Speech-to-text unavailable.")
+    if not GROQ_API_KEY or _groq_client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Speech-to-text service unavailable (Groq API key not configured)."
+        )
 
     suffix = os.path.splitext(file.filename or "")[1] or ".webm"
     temp_path = None
@@ -858,8 +831,26 @@ async def transcribe_audio(file: UploadFile = File(...)) -> Dict[str, str]:
             temp_path = tmp.name
             chunk = await file.read()
             tmp.write(chunk)
-        text = await run_in_threadpool(_transcribe_sync, temp_path)
+
+        def _call_groq_whisper(path: str) -> str:
+            with open(path, "rb") as audio_file:
+                transcription = _groq_client.audio.transcriptions.create(
+                    file=(os.path.basename(path), audio_file.read()),
+                    model=GROQ_WHISPER_MODEL,
+                    response_format="json",
+                    language="en",
+                )
+            text = getattr(transcription, "text", "") or ""
+            return text.strip()
+
+        text = await run_in_threadpool(_call_groq_whisper, temp_path)
         return {"text": text}
+    except Exception as exc:
+        log.error("Groq Whisper transcription error:\n%s", traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Audio transcription failed: {type(exc).__name__}: {exc}"
+        ) from exc
     finally:
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)

@@ -1,10 +1,7 @@
-python-dotenv
-fastapi
-pydantic
-uvicorn
-openai
-ollama
-pinecone
-google-genai
-python-multipart
-openai-whisper
+fastapi>=0.110.0
+uvicorn>=0.28.0
+groq>=0.5.0
+pinecone-client>=3.0.0
+python-multipart>=0.0.9
+pydantic>=2.0.0
+httpx>=0.27.0
