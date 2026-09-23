@@ -25,3 +25,11 @@ __pycache__/
 # OS Specific Files
 .DS_Store
 Thumbs.db.env
+
+node_modules
+.next/
+.turbo/
+out/
+build/
+.env.local
+.env*.local.vercel
